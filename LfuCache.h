@@ -1,7 +1,18 @@
 #include "ICachePolicy.h"
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
+#include <vector>
+
+namespace MyCache {
+
 template <typename Key, typename Value> class LfrCache;
 
 template <typename Key, typename Value> class FreqList {
@@ -112,6 +123,12 @@ public:
     return value;
   }
 
+  // 清空缓存,回收资源
+  void purge() {
+    nodeMap_.clear();
+    freqToFreqList_.clear();
+  }
+
 private:
   void putInternal(Key key, Value value);       // 添加缓存
   void getInternal(NodePtr node, Value &value); // 获取缓存
@@ -138,3 +155,198 @@ private:
   std::unordered_map<int, FreqList<Key, Value> *>
       freqToFreqList_; // 访问频次到该频次链表的映射
 };
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::getInternal(NodePtr node, Value &value) {
+
+  // 找到之后需要将其从低访问链表中删除，并且添加到+1的访问链表中，
+  // 访问频次+1，然后把 value 的值返回
+  value = node->value;
+  // 从原有访问频次的链表中删除节点
+  removeFromFreqList(node);
+  node->freq++;
+  addToFreqList(node);
+  // 如果当前 node 的访问频次等于 minFreq + 1，并且前驱链表为空，则说明
+  // freqToFreqList_[node->freq - 1] 链表因 node
+  // 的迁移已经空了，需要更新最小访问频次
+  if (node->freq - 1 == minFreq_ &&
+      freqToFreqList_[node->freq - 1]->isEmpty()) {
+    minFreq_++;
+  }
+
+  // 总访问频次和当前平均访问频次都随之增加
+  addFreqNum();
+}
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::putInternal(Key key, Value value) {
+  // 如果不在缓存中，则需要判断缓存是否已满
+  if (nodeMap_.size() == capacity_) {
+    // 缓存已满，删除最不常访问的节点，更新当前平均访问频次和总访问频次
+    kickOut();
+  }
+
+  // 创建新节点，将新节点添加进入，更新最小访问频次
+  NodePtr node = std::make_shared<Node>(key, value);
+  nodeMap_[key] = node;
+  addToFreqList(node);
+  addFreqNum();
+  minFreq_ = std::min(minFreq_, 1);
+}
+
+template <typename Key, typename Value> void LfuCache<Key, Value>::kickOut() {
+  NodePtr node = freqToFreqList_[minFreq_]->getFirstNode();
+  removeFromFreqList(node);
+  nodeMap_.erase(node->key);
+  decreaseFreqNum(node->freq);
+}
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::removeFromFreqList(NodePtr node) {
+
+  // 检查节点是否为空
+  if (!node) {
+    return;
+  }
+
+  auto freq = node->freq;
+  freqToFreqList_[freq]->removeNode(node);
+}
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::addToFreqList(NodePtr node) {
+  // 检查节点是否为空
+  if (!node) {
+    return;
+  }
+
+  // 添加进入到相应频次的链表时，需要先判断该链表是否存在
+  auto freq = node->freq;
+  if (freqToFreqList_.find(freq) == freqToFreqList_.end()) {
+    // 不存在则创建
+    freqToFreqList_[node->freq] = new FreqList<Key, Value>(node->freq);
+  }
+
+  freqToFreqList_[freq]->addNode(node);
+}
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::addFreqNum() {
+  curTotalNum_++;
+  if (nodeMap_.empty()) {
+    curAverageNum_ = 0;
+  } else {
+    curAverageNum_ = curTotalNum_ / nodeMap_.size();
+  }
+
+  if (curAverageNum_ > maxAverageNum_) {
+    handleOverMaxAverageNum();
+  }
+}
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::decreaseFreqNum(int num) {
+  // 减少平均访问频次和总访问频次
+  curTotalNum_ -= num;
+  if (nodeMap_.empty()) {
+    curAverageNum_ = 0;
+  } else {
+    curAverageNum_ = curTotalNum_ / nodeMap_.size();
+  }
+}
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::handleOverMaxAverageNum() {
+  if (nodeMap_.empty()) {
+    return;
+  }
+  // 当前平均访问频次已经超过了最大平均访问频次，所有节点的访问频次 -
+  // (maxAverageNum_ / 2)
+  for (auto it = nodeMap_.begin(); it != nodeMap_.end(); ++it) {
+    // 检查节点是否为空
+    if (!it->second) {
+      continue;
+    }
+    NodePtr node = it->second;
+
+    // 先从当前频次链表中移除
+    removeFromFreqList(node);
+
+    // 减少频率
+    node->freq -= maxAverageNum_ / 2;
+    if (node->freq < 1)
+      node->freq = 1;
+
+    // 添加到新的频次链表
+    addToFreqList(node);
+  }
+  // 更新最小频次
+  updateMinFreq();
+}
+
+template <typename Key, typename Value>
+void LfuCache<Key, Value>::updateMinFreq() {
+  minFreq_ = INT8_MIN;
+
+  for (const auto &pair : freqToFreqList_) {
+    if (pair.second && !pair.second->isEmpty()) {
+      minFreq_ = std::min(minFreq_, pair.first);
+    }
+  }
+
+  if (minFreq_ == INT8_MAX)
+    minFreq_ = 1;
+}
+
+// 并没有牺牲空间换时间，它是把原有缓存大小进行了分片
+template <typename Key, typename Value> class HashLfuCache {
+public:
+  HashLfuCache(size_t capacity, int slicedNum, int maxAverageNum = 10)
+      : slicedNum_(slicedNum > 0 ? slicedNum
+                                 : std::thread::hardware_concurrency()),
+        capacity_(capacity) {
+    size_t sliceSize = std::ceil(capacity_ / static_cast<double>(slicedNum_));
+    for (int i = 0; i < slicedNum_; ++i) {
+      lfuSliceCaches_.emplace_back(
+          new LfrCache<Key, Value>(sliceSize, maxAverageNum));
+    }
+  }
+
+  void put(Key key, Value value) {
+    // 根据 key 找出对应的lfu分片
+    size_t sliceIndex = Hash(key) % slicedNum_;
+    return lfuSliceCaches_[sliceIndex]->put(key, value);
+  }
+  void get(Key key, Value &value) {
+    // 根据 key 找出对应的lfu分片
+    size_t sliceIndex = Hash(key) % slicedNum_;
+    return lfuSliceCaches_[sliceIndex]->get(key, value);
+  }
+  Value get(Key key) {
+    Value value;
+    get(key, value);
+    return value;
+  }
+
+  // 清除缓存
+  void purge() {
+    for (auto &lfuSliceCache : lfuSliceCaches_) {
+      lfuSliceCache->purge();
+    }
+  }
+
+private:
+  // 将 key 计算成对应哈希值
+  size_t Hash(Key key) {
+    std::hash<Key> hashFunc;
+    return hashFunc(key);
+  }
+
+private:
+  size_t capacity_; // 缓存总容量
+
+  int slicedNum_; // 缓存分片数量
+  std::vector<std::unique_ptr<LfuCache<Key, Value>>>
+      lfuSliceCaches_; // 缓存lfu分片容器
+};
+} // namespace MyCache
