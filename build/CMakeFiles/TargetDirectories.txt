@@ -1,0 +1,3 @@
+/home/oylonq/MyCache/build/CMakeFiles/main.dir
+/home/oylonq/MyCache/build/CMakeFiles/edit_cache.dir
+/home/oylonq/MyCache/build/CMakeFiles/rebuild_cache.dir
