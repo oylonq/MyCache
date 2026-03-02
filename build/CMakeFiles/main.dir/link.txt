@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--dependency-file=CMakeFiles/main.dir/link.d CMakeFiles/main.dir/basic_LfuCache.cpp.o CMakeFiles/main.dir/testAllCachePolicy.cpp.o -o main

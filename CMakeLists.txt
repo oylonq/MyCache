@@ -1,6 +1,8 @@
 # 设置最低 CMake 版本要求
 cmake_minimum_required(VERSION 3.10)
 
+set(CMAKE_BUILD_TYPE Debug)
+
 # 设置项目名称
 project(KCacheSystem)
 

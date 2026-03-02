@@ -13,7 +13,7 @@
 
 namespace MyCache {
 
-template <typename Key, typename Value> class LfrCache;
+template <typename Key, typename Value> class LfuCache;
 
 template <typename Key, typename Value> class FreqList {
 private:
@@ -72,7 +72,7 @@ public:
 
   NodePtr getFirstNode() const { return head_->next; }
 
-  friend class LfrCache<Key, Value>;
+  friend class LfuCache<Key, Value>;
 };
 
 template <typename Key, typename Value>
@@ -110,7 +110,7 @@ public:
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(key);
     if (it != nodeMap_.end()) {
-      getInternal(it.second, value);
+      getInternal(it->second, value);
       return true;
     }
 
@@ -286,7 +286,7 @@ void LfuCache<Key, Value>::handleOverMaxAverageNum() {
 
 template <typename Key, typename Value>
 void LfuCache<Key, Value>::updateMinFreq() {
-  minFreq_ = INT8_MIN;
+  minFreq_ = INT8_MAX;
 
   for (const auto &pair : freqToFreqList_) {
     if (pair.second && !pair.second->isEmpty()) {
@@ -308,7 +308,7 @@ public:
     size_t sliceSize = std::ceil(capacity_ / static_cast<double>(slicedNum_));
     for (int i = 0; i < slicedNum_; ++i) {
       lfuSliceCaches_.emplace_back(
-          new LfrCache<Key, Value>(sliceSize, maxAverageNum));
+          new LfuCache<Key, Value>(sliceSize, maxAverageNum));
     }
   }
 

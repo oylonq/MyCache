@@ -30,7 +30,7 @@ public:
   // 提供必要的访问器
   Key getKey() const { return key_; }
   Value getValue() const { return value_; }
-  Value setValue(const Value &value) { value_ = value; }
+  void setValue(const Value &value) { value_ = value; }
   size_t getAccessCount() const { return accessCount_; }
   void incrementAccessCount() { ++accessCount_; }
 
@@ -56,14 +56,14 @@ public:
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(key);
     if (it != nodeMap_.end()) {
-      updateExistingNode(it.second, value);
+      updateExistingNode(it->second, value);
       return;
     }
 
     addNewNode(key, value);
   }
 
-  bool get(Key key, Value value) override {
+  bool get(Key key, Value &value) override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(key);
     if (it != nodeMap_.end()) {
@@ -161,7 +161,7 @@ class LruKCache : public LruCache<Key, Value> {
 public:
   LruKCache(int capacity, int historyCapacity, int k)
       : LruCache<Key, Value>(capacity),
-        historyList_(std::make_unique<LruKCache<Key, size_t>>(historyCapacity)),
+        historyList_(std::make_unique<LruCache<Key, size_t>>(historyCapacity)),
         k_(k) {}
 
   Value get(Key key) {
@@ -236,8 +236,7 @@ private:
   int k_; // 进入缓存队列的评判标准
   std::unique_ptr<LruCache<Key, size_t>>
       historyList_; // 访问数据历史记录（value 为访问次数）
-  std::pmr::unordered_map<Key, Value>
-      historyValueMap_; // 存储未达到k次访问的数据值
+  std::unordered_map<Key, Value> historyValueMap_; // 存储未达到k次访问的数据值
 };
 
 // Lru 优化：对lru进行分片，提高高并发使用性能
